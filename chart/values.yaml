@@ -1,0 +1,23 @@
+# Image coordinates are overridden by CI (--set) so the chart deploys the
+# exact images built in that run. Defaults here are for manual use.
+backend:
+  image:
+    repository: example-backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 3000
+  appVersion: helm
+
+frontend:
+  image:
+    repository: example-frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicas: 1
+  port: 8080
+
+ingress:
+  enabled: true
+  className: nginx
+  host: example.local

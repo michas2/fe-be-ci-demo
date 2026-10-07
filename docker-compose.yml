@@ -1,0 +1,34 @@
+# Fast tier only (and local dev). Kubernetes/Helm does NOT use this file;
+# the kind fidelity tier deploys the Helm chart instead. Both tiers run the
+# same images built from backend/Dockerfile and frontend/Dockerfile.
+#
+# `docker compose up --build` brings up the whole stack; the frontend
+# proxies /api to the backend over the compose network.
+services:
+  backend:
+    build: ./backend
+    environment:
+      APP_VERSION: compose
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  frontend:
+    build: ./frontend
+    environment:
+      BACKEND_HOST: backend
+      BACKEND_PORT: "3000"
+    ports:
+      # Host port 18080 to avoid collisions with other local services;
+      # container still listens on 8080.
+      - "18080:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

@@ -1,0 +1,28 @@
+# Rendered at container start by nginx's envsubst entrypoint.
+# BACKEND_HOST / BACKEND_PORT come from the environment
+# (docker-compose service name, or the Helm backend Service name).
+server {
+    listen 8080;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Reverse-proxy API calls to the backend so the browser stays same-origin.
+    location /api/ {
+        proxy_pass http://${BACKEND_HOST}:${BACKEND_PORT};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # Frontend's own health endpoint for k8s probes.
+    location = /healthz {
+        access_log off;
+        return 200 "ok\n";
+        add_header Content-Type text/plain;
+    }
+}

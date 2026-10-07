@@ -1,0 +1,6 @@
+apiVersion: v2
+name: example-app
+description: Frontend + backend demo chart used by the kind fidelity tier
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

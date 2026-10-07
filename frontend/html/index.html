@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Frontend ↔ Backend Demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 40rem; }
+      h1 { font-size: 1.4rem; }
+      #messages li { margin: 0.3rem 0; }
+      .meta { color: #666; font-size: 0.85rem; }
+      .error { color: #b00; }
+    </style>
+  </head>
+  <body>
+    <h1>Frontend ↔ Backend Demo</h1>
+    <p class="meta" id="info">Loading backend info…</p>
+    <h2>Messages from the backend</h2>
+    <ul id="messages"><li>Loading…</li></ul>
+
+    <script>
+      // nginx proxies /api/* to the backend, so this is same-origin.
+      async function load() {
+        const list = document.getElementById("messages");
+        const info = document.getElementById("info");
+        try {
+          const [msgRes, infoRes] = await Promise.all([
+            fetch("/api/messages"),
+            fetch("/api/info"),
+          ]);
+          const { messages } = await msgRes.json();
+          const meta = await infoRes.json();
+          list.innerHTML = "";
+          for (const m of messages) {
+            const li = document.createElement("li");
+            li.textContent = m.text;
+            li.dataset.id = m.id;
+            list.appendChild(li);
+          }
+          info.textContent = `backend: ${meta.service} v${meta.version} @ ${meta.time}`;
+        } catch (err) {
+          list.innerHTML = `<li class="error">Failed to reach backend: ${err}</li>`;
+        }
+      }
+      load();
+    </script>
+  </body>
+</html>

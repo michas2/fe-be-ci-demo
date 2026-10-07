@@ -1,0 +1,14 @@
+{
+  "name": "example-backend",
+  "version": "1.0.0",
+  "description": "Example Express backend for the two-tier CI demo",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "4.21.2"
+  }
+}
