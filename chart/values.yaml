@@ -17,7 +17,10 @@ frontend:
   replicas: 1
   port: 8080
 
-ingress:
+# Kubernetes Gateway API (replaces the retired ingress-nginx path).
+# The GatewayClass is provided by the cluster's Gateway controller
+# (Envoy Gateway in CI). The chart creates a Gateway + HTTPRoute.
+gateway:
   enabled: true
-  className: nginx
-  host: example.local
+  className: eg
+  hostname: example.local

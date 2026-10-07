@@ -8,9 +8,10 @@ and a **backend** on GitHub Actions, using a **two-tier pipeline**:
    "do the two services work together at all?"
 2. **Fidelity tier — kind + Helm:** spins up a real single-node Kubernetes
    cluster ([kind](https://kind.sigs.k8s.io/)), deploys the **Helm chart**, and
-   runs the *same* integration test through the Ingress. Catches
-   Kubernetes-specific issues (Service DNS, probes, Ingress) before any real
-   infrastructure is involved.
+   runs the *same* integration test through the **Gateway** (Kubernetes Gateway
+   API, served by [Envoy Gateway](https://gateway.envoyproxy.io/)). Catches
+   Kubernetes-specific issues (Service DNS, probes, Gateway routing) before any
+   real infrastructure is involved.
 
 Both tiers run the **same container images** and the **same integration test** —
 only the way the services are wired together differs. Docker Compose and
@@ -22,7 +23,7 @@ happen to run the same images.
 ```
 backend/        Node/Express API (/healthz, /api/messages, /api/info)
 frontend/       nginx serving a static page; proxies /api -> backend
-chart/          Helm chart (Deployments, Services, Ingress) for the fidelity tier
+chart/          Helm chart (Deployments, Services, Gateway + HTTPRoute) for the fidelity tier
 tests/          Portable integration test (reads BASE_URL)
 docker-compose.yml   Fast tier + local dev
 .github/workflows/ci.yml   The two-tier pipeline
@@ -68,7 +69,7 @@ helm template demo ./chart
 | -------------------- | ------------------------------------------------------------------- |
 | `unit`               | Backend unit tests (`npm test`).                                    |
 | `compose-fast-tier`  | `docker compose up` + integration test against `:18080`.            |
-| `kind-fidelity-tier` | kind cluster + ingress-nginx + `helm install` + integration test through the Ingress. |
+| `kind-fidelity-tier` | kind cluster + Envoy Gateway (Gateway API) + `helm install` + integration test through the Gateway. |
 
 Both integration jobs depend on `unit`. Everything runs on the free
 `ubuntu-latest` GitHub-hosted runner — no self-hosted runner required.
@@ -78,5 +79,5 @@ Both integration jobs depend on `unit`. Everything runs on the free
 - **Compose:** image build errors, basic service-to-service wiring, the API
   contract between frontend and backend.
 - **kind + Helm:** everything above *plus* Kubernetes Service discovery,
-  readiness/liveness probes, and Ingress routing — i.e. the actual deployment
+  readiness/liveness probes, and Gateway API routing — i.e. the actual deployment
   path.

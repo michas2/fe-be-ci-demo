@@ -70,12 +70,14 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Fidelity tier: spin up a real (single-node) Kubernetes cluster with kind,
-  # install the ingress controller, build + load the images, deploy via Helm,
-  # then run the SAME integration test through the Ingress. Catches
-  # Kubernetes-specific issues (Service DNS, probes, Ingress) before real infra.
+  # install the Gateway API controller (Envoy Gateway), build + load the images,
+  # deploy via Helm, then run the SAME integration test through the Gateway.
+  # Catches Kubernetes-specific issues (Service DNS, probes, Gateway routing)
+  # before real infra. Uses the Kubernetes Gateway API, not the retired
+  # ingress-nginx.
   # ---------------------------------------------------------------------------
   kind-fidelity-tier:
-    name: Integration (kind + Helm)
+    name: Integration (kind + Helm + Gateway API)
     runs-on: ubuntu-latest
     needs: unit
     steps:
@@ -99,13 +101,25 @@ jobs:
           kind load docker-image example-backend:ci --name ci
           kind load docker-image example-frontend:ci --name ci
 
-      - name: Install ingress-nginx
+      - name: Install Envoy Gateway (Gateway API controller)
         run: |
-          kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/kind/deploy.yaml
-          kubectl wait --namespace ingress-nginx \
-            --for=condition=ready pod \
-            --selector=app.kubernetes.io/component=controller \
-            --timeout=180s
+          # Installs the Gateway API CRDs and the Envoy Gateway controller.
+          helm install eg oci://docker.io/envoyproxy/gateway-helm \
+            --version v1.4.6 \
+            -n envoy-gateway-system --create-namespace
+          kubectl wait --timeout=300s -n envoy-gateway-system \
+            deployment/envoy-gateway --for=condition=Available
+
+      - name: Create GatewayClass
+        run: |
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: GatewayClass
+          metadata:
+            name: eg
+          spec:
+            controllerName: gateway.envoyproxy.io/gatewayclass-controller
+          EOF
 
       - name: Deploy with Helm
         run: |
@@ -118,20 +132,32 @@ jobs:
             --set frontend.image.pullPolicy=Never \
             --wait --timeout 180s
 
-      - name: Show deployed resources
-        run: kubectl get pods,svc,ingress
-
-      - name: Port-forward the ingress controller
+      - name: Wait for the Gateway to be programmed
         run: |
-          kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80 &
-          sleep 5
+          kubectl wait --timeout=180s gateway/demo \
+            --for=condition=Programmed
 
-      - name: Run integration tests through the Ingress
+      - name: Show deployed resources
+        run: kubectl get pods,svc,gateway,httproute
+
+      - name: Port-forward the Envoy service
+        run: |
+          # Envoy Gateway creates one Envoy Service per Gateway, labelled with
+          # the owning gateway. Find it and port-forward to localhost:8080.
+          ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo \
+            -o jsonpath='{.items[0].metadata.name}')
+          echo "Envoy service: $ENVOY_SVC"
+          kubectl -n envoy-gateway-system port-forward "svc/${ENVOY_SVC}" 8080:80 &
+          # Give the port-forward a moment to establish.
+          sleep 8
+
+      - name: Run integration tests through the Gateway
         env:
-          # Host header must match the chart's ingress host.
+          # Host header must match the chart's gateway hostname.
           BASE_URL: http://example.local:8080
         run: |
-          # Map example.local -> 127.0.0.1 so the Host header matches the Ingress rule.
+          # Map example.local -> 127.0.0.1 so the Host header matches the route.
           echo "127.0.0.1 example.local" | sudo tee -a /etc/hosts
           node --test tests/integration.test.mjs
 
@@ -139,6 +165,9 @@ jobs:
         if: failure()
         run: |
           kubectl get pods -A
+          kubectl get gateway,httproute -A
+          kubectl describe gateway demo || true
+          kubectl describe httproute demo || true
           kubectl describe pods -l app.kubernetes.io/instance=demo
           kubectl logs -l app.kubernetes.io/component=backend --tail=50 || true
           kubectl logs -l app.kubernetes.io/component=frontend --tail=50 || true
