@@ -27,8 +27,14 @@ app.get("/api/info", (_req, res) => {
   });
 });
 
-// Only listen when run directly, so tests can import the app.
-if (process.env.NODE_ENV !== "test") {
+// Only listen when this file is run directly (node server.js), not when it is
+// imported by a test. Using the entry-point check instead of NODE_ENV means it
+// works regardless of how the test runner is invoked.
+import { fileURLToPath } from "node:url";
+import process from "node:process";
+
+const isMain = process.argv[1] === fileURLToPath(import.meta.url);
+if (isMain) {
   app.listen(PORT, () => {
     console.log(`backend listening on :${PORT}`);
   });
