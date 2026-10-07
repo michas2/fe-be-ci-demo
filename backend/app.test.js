@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import app from "./server.js";
+import app from "./app.js";
 
 // Start the app on an ephemeral port for each test run.
 function listen() {

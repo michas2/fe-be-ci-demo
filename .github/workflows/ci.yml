@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - name: Install deps
@@ -40,20 +40,12 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Build and start the stack
-        run: docker compose up --build -d
-
-      - name: Wait for the frontend to be healthy
-        run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:18080/healthz >/dev/null; then
-              echo "frontend is up"; exit 0
-            fi
-            echo "waiting for frontend... ($i)"; sleep 2
-          done
-          echo "frontend did not become healthy"; docker compose logs; exit 1
+        # --wait blocks until the compose healthchecks pass (or fail),
+        # so no manual polling loop is needed.
+        run: docker compose up --build -d --wait
 
       - name: Run integration tests
         env:
@@ -84,7 +76,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: "22"
+          node-version: "24"
 
       - name: Create kind cluster
         uses: helm/kind-action@v1
@@ -105,7 +97,7 @@ jobs:
         run: |
           # Installs the Gateway API CRDs and the Envoy Gateway controller.
           helm install eg oci://docker.io/envoyproxy/gateway-helm \
-            --version v1.4.6 \
+            --version v1.9.2 \
             -n envoy-gateway-system --create-namespace
           kubectl wait --timeout=300s -n envoy-gateway-system \
             deployment/envoy-gateway --for=condition=Available

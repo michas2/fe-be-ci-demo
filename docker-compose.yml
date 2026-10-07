@@ -10,7 +10,7 @@ services:
     environment:
       APP_VERSION: compose
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3000/healthz"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -28,7 +28,9 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      # Use 127.0.0.1 (not localhost): in the alpine image localhost resolves
+      # to ::1, but nginx listens on IPv4 only, so localhost would be refused.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 5s
       timeout: 3s
       retries: 10
