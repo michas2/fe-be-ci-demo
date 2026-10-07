@@ -170,3 +170,91 @@ jobs:
           kubectl describe pods -l app.kubernetes.io/instance=demo
           kubectl logs -l app.kubernetes.io/component=backend --tail=50 || true
           kubectl logs -l app.kubernetes.io/component=frontend --tail=50 || true
+
+  # ---------------------------------------------------------------------------
+  # EXPERIMENTAL comparison tier: same fidelity test, but on vind (vCluster in
+  # Docker) instead of kind. Two things differ from the kind job:
+  #   1. No "kind load docker-image" step — vind uses the host Docker daemon,
+  #      so freshly-built images are directly available in the cluster.
+  #   2. LoadBalancer Services work out of the box, so the Gateway gets a real
+  #      address and we test through it (no kubectl port-forward needed).
+  # This job is here to compare vind vs kind on real CI; kind remains the gate.
+  # ---------------------------------------------------------------------------
+  vind-fidelity-tier:
+    name: Integration (vind + Helm + Gateway API)
+    runs-on: ubuntu-latest
+    needs: unit
+    # Don't fail the whole pipeline while we're still evaluating vind.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Create vind cluster
+        uses: loft-sh/setup-vind@v1
+
+      - name: Build images
+        # No load step: vind uses the host Docker daemon directly.
+        run: |
+          docker build -t example-backend:ci ./backend
+          docker build -t example-frontend:ci ./frontend
+
+      - name: Install Envoy Gateway (Gateway API controller)
+        run: |
+          helm install eg oci://docker.io/envoyproxy/gateway-helm \
+            --version v1.9.2 \
+            -n envoy-gateway-system --create-namespace
+          kubectl wait --timeout=300s -n envoy-gateway-system \
+            deployment/envoy-gateway --for=condition=Available
+
+      - name: Create GatewayClass
+        run: |
+          cat <<'EOF' | kubectl apply -f -
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: GatewayClass
+          metadata:
+            name: eg
+          spec:
+            controllerName: gateway.envoyproxy.io/gatewayclass-controller
+          EOF
+
+      - name: Deploy with Helm
+        run: |
+          helm upgrade --install demo ./chart \
+            --set backend.image.repository=example-backend \
+            --set backend.image.tag=ci \
+            --set backend.image.pullPolicy=IfNotPresent \
+            --set frontend.image.repository=example-frontend \
+            --set frontend.image.tag=ci \
+            --set frontend.image.pullPolicy=IfNotPresent \
+            --wait --timeout 180s
+
+      - name: Wait for the Gateway to be programmed
+        run: |
+          # Unlike kind, vind provides a LoadBalancer, so the Gateway should
+          # reach Programmed=True with an assigned address.
+          kubectl wait --timeout=180s gateway/demo --for=condition=Programmed
+
+      - name: Show deployed resources
+        run: kubectl get pods,svc,gateway,httproute
+
+      - name: Run integration tests through the Gateway LoadBalancer
+        run: |
+          # Read the address the Gateway was assigned (works because vind has
+          # a LoadBalancer) and point example.local at it — no port-forward.
+          GW_ADDR=$(kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}')
+          echo "Gateway address: $GW_ADDR"
+          echo "$GW_ADDR example.local" | sudo tee -a /etc/hosts
+          BASE_URL=http://example.local node --test tests/integration.test.mjs
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl get pods -A
+          kubectl get gateway,httproute,svc -A
+          kubectl describe gateway demo || true
+          kubectl describe httproute demo || true
+          kubectl logs -l app.kubernetes.io/component=backend --tail=50 || true
+          kubectl logs -l app.kubernetes.io/component=frontend --tail=50 || true
