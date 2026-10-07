@@ -132,10 +132,17 @@ jobs:
             --set frontend.image.pullPolicy=Never \
             --wait --timeout 180s
 
-      - name: Wait for the Gateway to be programmed
+      - name: Wait for the Envoy data plane to be ready
         run: |
-          kubectl wait --timeout=180s gateway/demo \
-            --for=condition=Programmed
+          # In kind there is no LoadBalancer, so the Gateway never reaches
+          # Programmed=True (reason: AddressNotAssigned). That's fine for CI:
+          # the listener is translated and the Envoy data-plane pod serves
+          # traffic, which we reach via port-forward. So we wait on the Envoy
+          # deployment that Envoy Gateway creates for this Gateway, not on the
+          # Gateway's address.
+          kubectl wait --timeout=180s -n envoy-gateway-system \
+            --for=condition=Available deployment \
+            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo
 
       - name: Show deployed resources
         run: kubectl get pods,svc,gateway,httproute
