@@ -174,8 +174,9 @@ jobs:
   # ---------------------------------------------------------------------------
   # EXPERIMENTAL comparison tier: same fidelity test, but on vind (vCluster in
   # Docker) instead of kind. Two things differ from the kind job:
-  #   1. No "kind load docker-image" step — vind uses the host Docker daemon,
-  #      so freshly-built images are directly available in the cluster.
+  #   1. No "kind load docker-image" step — with the containerd image store
+  #      enabled on the runner, vind's registry proxy serves locally-built
+  #      images to the cluster directly.
   #   2. LoadBalancer Services work out of the box, so the Gateway gets a real
   #      address and we test through it (no kubectl port-forward needed).
   # This job is here to compare vind vs kind on real CI; kind remains the gate.
@@ -192,14 +193,29 @@ jobs:
         with:
           node-version: "24"
 
-      - name: Create vind cluster
-        uses: loft-sh/setup-vind@v1
+      - name: Enable the containerd image store
+        # vind's registry proxy (which lets the cluster use purely local images
+        # instead of pulling from a registry) only works when the host Docker
+        # daemon uses the containerd image store. The ubuntu-latest runner
+        # defaults to the legacy overlay2 store, so we switch it here. This must
+        # happen BEFORE building images and before creating the cluster, since
+        # restarting Docker clears running containers.
+        run: |
+          echo '{ "features": { "containerd-snapshotter": true } }' \
+            | sudo tee /etc/docker/daemon.json
+          sudo systemctl restart docker
+          # Confirm the containerd snapshotter is active.
+          docker info -f '{{ .DriverStatus }}'
 
       - name: Build images
-        # No load step: vind uses the host Docker daemon directly.
+        # No load step: with the containerd image store enabled, vind's registry
+        # proxy serves these locally-built images directly to the cluster.
         run: |
           docker build -t example-backend:ci ./backend
           docker build -t example-frontend:ci ./frontend
+
+      - name: Create vind cluster
+        uses: loft-sh/setup-vind@v1
 
       - name: Install Envoy Gateway (Gateway API controller)
         run: |
