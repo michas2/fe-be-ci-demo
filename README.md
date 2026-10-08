@@ -6,12 +6,15 @@ and a **backend** on GitHub Actions, using a **two-tier pipeline**:
 1. **Fast tier — Docker Compose:** builds both images and brings the stack up
    with `docker compose`, then runs an integration test. Quick feedback on
    "do the two services work together at all?"
-2. **Fidelity tier — kind + Helm:** spins up a real single-node Kubernetes
-   cluster ([kind](https://kind.sigs.k8s.io/)), deploys the **Helm chart**, and
-   runs the *same* integration test through the **Gateway** (Kubernetes Gateway
-   API, served by [Envoy Gateway](https://gateway.envoyproxy.io/)). Catches
-   Kubernetes-specific issues (Service DNS, probes, Gateway routing) before any
-   real infrastructure is involved.
+2. **Fidelity tier — vind + Helm:** spins up a real single-node Kubernetes
+   cluster with [vind](https://github.com/loft-sh/vind) (vCluster in Docker),
+   deploys the **Helm chart**, and runs the *same* integration test through the
+   **Gateway** (Kubernetes Gateway API, served by
+   [Envoy Gateway](https://gateway.envoyproxy.io/)). Because vind provides a
+   working LoadBalancer, the test hits the Gateway's real LoadBalancer address
+   directly — no `kubectl port-forward`. Catches Kubernetes-specific issues
+   (Service DNS, probes, Gateway routing, LoadBalancer) before any real
+   infrastructure is involved.
 
 Both tiers run the **same container images** and the **same integration test** —
 only the way the services are wired together differs. Docker Compose and
@@ -69,7 +72,7 @@ helm template demo ./chart
 | -------------------- | ------------------------------------------------------------------- |
 | `unit`               | Backend unit tests (`npm test`).                                    |
 | `compose-fast-tier`  | `docker compose up` + integration test against `:18080`.            |
-| `kind-fidelity-tier` | kind cluster + Envoy Gateway (Gateway API) + `helm install` + integration test through the Gateway. |
+| `fidelity-tier`      | vind cluster + Envoy Gateway (Gateway API) + `helm install` + integration test through the Gateway LoadBalancer. |
 
 Both integration jobs depend on `unit`. Everything runs on the free
 `ubuntu-latest` GitHub-hosted runner — no self-hosted runner required.
@@ -78,6 +81,6 @@ Both integration jobs depend on `unit`. Everything runs on the free
 
 - **Compose:** image build errors, basic service-to-service wiring, the API
   contract between frontend and backend.
-- **kind + Helm:** everything above *plus* Kubernetes Service discovery,
-  readiness/liveness probes, and Gateway API routing — i.e. the actual deployment
-  path.
+- **vind + Helm:** everything above *plus* Kubernetes Service discovery,
+  readiness/liveness probes, LoadBalancer provisioning, and Gateway API routing
+  — i.e. the actual deployment path.

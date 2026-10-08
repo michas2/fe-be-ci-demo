@@ -61,132 +61,22 @@ jobs:
         run: docker compose down
 
   # ---------------------------------------------------------------------------
-  # Fidelity tier: spin up a real (single-node) Kubernetes cluster with kind,
-  # install the Gateway API controller (Envoy Gateway), build + load the images,
-  # deploy via Helm, then run the SAME integration test through the Gateway.
-  # Catches Kubernetes-specific issues (Service DNS, probes, Gateway routing)
-  # before real infra. Uses the Kubernetes Gateway API, not the retired
-  # ingress-nginx.
+  # Fidelity tier: spin up a real (single-node) Kubernetes cluster with vind
+  # (vCluster in Docker), install the Gateway API controller (Envoy Gateway),
+  # build the images, deploy via Helm, then run the SAME integration test
+  # through the Gateway's LoadBalancer. Catches Kubernetes-specific issues
+  # (Service DNS, probes, Gateway routing, LoadBalancer) before real infra.
+  #
+  # Why vind over kind here:
+  #   - LoadBalancer Services work out of the box, so the Gateway gets a real
+  #     address and we test the actual LB -> Gateway data path (no port-forward).
+  #   - No image load step: with the containerd image store enabled on the
+  #     runner, vind's registry proxy serves locally-built images directly.
   # ---------------------------------------------------------------------------
-  kind-fidelity-tier:
-    name: Integration (kind + Helm + Gateway API)
-    runs-on: ubuntu-latest
-    needs: unit
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-
-      - name: Create kind cluster
-        uses: helm/kind-action@v1
-        with:
-          cluster_name: ci
-
-      - name: Build images
-        run: |
-          docker build -t example-backend:ci ./backend
-          docker build -t example-frontend:ci ./frontend
-
-      - name: Load images into kind
-        run: |
-          kind load docker-image example-backend:ci --name ci
-          kind load docker-image example-frontend:ci --name ci
-
-      - name: Install Envoy Gateway (Gateway API controller)
-        run: |
-          # Installs the Gateway API CRDs and the Envoy Gateway controller.
-          helm install eg oci://docker.io/envoyproxy/gateway-helm \
-            --version v1.9.2 \
-            -n envoy-gateway-system --create-namespace
-          kubectl wait --timeout=300s -n envoy-gateway-system \
-            deployment/envoy-gateway --for=condition=Available
-
-      - name: Create GatewayClass
-        run: |
-          cat <<'EOF' | kubectl apply -f -
-          apiVersion: gateway.networking.k8s.io/v1
-          kind: GatewayClass
-          metadata:
-            name: eg
-          spec:
-            controllerName: gateway.envoyproxy.io/gatewayclass-controller
-          EOF
-
-      - name: Deploy with Helm
-        run: |
-          helm upgrade --install demo ./chart \
-            --set backend.image.repository=example-backend \
-            --set backend.image.tag=ci \
-            --set backend.image.pullPolicy=Never \
-            --set frontend.image.repository=example-frontend \
-            --set frontend.image.tag=ci \
-            --set frontend.image.pullPolicy=Never \
-            --wait --timeout 180s
-
-      - name: Wait for the Envoy data plane to be ready
-        run: |
-          # In kind there is no LoadBalancer, so the Gateway never reaches
-          # Programmed=True (reason: AddressNotAssigned). That's fine for CI:
-          # the listener is translated and the Envoy data-plane pod serves
-          # traffic, which we reach via port-forward. So we wait on the Envoy
-          # deployment that Envoy Gateway creates for this Gateway, not on the
-          # Gateway's address.
-          kubectl wait --timeout=180s -n envoy-gateway-system \
-            --for=condition=Available deployment \
-            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo
-
-      - name: Show deployed resources
-        run: kubectl get pods,svc,gateway,httproute
-
-      - name: Port-forward the Envoy service
-        run: |
-          # Envoy Gateway creates one Envoy Service per Gateway, labelled with
-          # the owning gateway. Find it and port-forward to localhost:8080.
-          ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
-            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo \
-            -o jsonpath='{.items[0].metadata.name}')
-          echo "Envoy service: $ENVOY_SVC"
-          kubectl -n envoy-gateway-system port-forward "svc/${ENVOY_SVC}" 8080:80 &
-          # Give the port-forward a moment to establish.
-          sleep 8
-
-      - name: Run integration tests through the Gateway
-        env:
-          # Host header must match the chart's gateway hostname.
-          BASE_URL: http://example.local:8080
-        run: |
-          # Map example.local -> 127.0.0.1 so the Host header matches the route.
-          echo "127.0.0.1 example.local" | sudo tee -a /etc/hosts
-          node --test tests/integration.test.mjs
-
-      - name: Dump diagnostics on failure
-        if: failure()
-        run: |
-          kubectl get pods -A
-          kubectl get gateway,httproute -A
-          kubectl describe gateway demo || true
-          kubectl describe httproute demo || true
-          kubectl describe pods -l app.kubernetes.io/instance=demo
-          kubectl logs -l app.kubernetes.io/component=backend --tail=50 || true
-          kubectl logs -l app.kubernetes.io/component=frontend --tail=50 || true
-
-  # ---------------------------------------------------------------------------
-  # EXPERIMENTAL comparison tier: same fidelity test, but on vind (vCluster in
-  # Docker) instead of kind. Two things differ from the kind job:
-  #   1. No "kind load docker-image" step — with the containerd image store
-  #      enabled on the runner, vind's registry proxy serves locally-built
-  #      images to the cluster directly.
-  #   2. LoadBalancer Services work out of the box, so the Gateway gets a real
-  #      address and we test through it (no kubectl port-forward needed).
-  # This job is here to compare vind vs kind on real CI; kind remains the gate.
-  # ---------------------------------------------------------------------------
-  vind-fidelity-tier:
+  fidelity-tier:
     name: Integration (vind + Helm + Gateway API)
     runs-on: ubuntu-latest
     needs: unit
-    # Don't fail the whole pipeline while we're still evaluating vind.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -249,32 +139,20 @@ jobs:
 
       - name: Wait for the Gateway to be programmed
         run: |
-          # Unlike kind, vind provides a LoadBalancer, so the Gateway should
-          # reach Programmed=True with an assigned address.
+          # vind provides a LoadBalancer, so the Gateway reaches Programmed=True
+          # with an assigned address (the Envoy service's external IP).
           kubectl wait --timeout=180s gateway/demo --for=condition=Programmed
 
-      - name: Inspect the LoadBalancer (how vind exposes the Gateway)
+      - name: Run integration tests through the Gateway LoadBalancer
         run: |
-          # vind's cloud-controller-manager starts a dedicated HAProxy
-          # container per LoadBalancer service, attached to the vind Docker
-          # network, and sets the Service EXTERNAL-IP to that container's IP.
-          echo "=== vind-related docker containers ==="
-          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep -Ei 'vcluster|haproxy|vind' || true
-          echo "=== docker networks ==="
-          docker network ls
-          echo "=== Gateway address (the LB IP) ==="
-          kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}'; echo
-
-      - name: Run integration tests directly through the LoadBalancer IP
-        run: |
-          # On Linux, Docker network IPs are routable from the host, so we try
-          # to reach the LoadBalancer IP directly — no kubectl port-forward.
+          # On Linux, Docker network IPs are routable from the host, so we reach
+          # the LoadBalancer IP directly — no kubectl port-forward needed.
           GW_ADDR=$(kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}')
           echo "Gateway LoadBalancer address: $GW_ADDR"
           echo "$GW_ADDR example.local" | sudo tee -a /etc/hosts
 
-          # Wait until the HAProxy LB actually answers (it may need a few
-          # seconds after the Gateway reports Programmed).
+          # The HAProxy LB container may need a few seconds to start answering
+          # after the Gateway reports Programmed; poll before running the tests.
           for i in $(seq 1 30); do
             if curl -sf -H "Host: example.local" "http://$GW_ADDR/healthz" >/dev/null; then
               echo "LoadBalancer is reachable from the host"; break
@@ -293,7 +171,7 @@ jobs:
           ip route get "$GW_ADDR" || true
           echo "=== direct curl attempt ==="
           curl -v -H "Host: example.local" "http://$GW_ADDR/healthz" || true
-          echo "=== docker containers / networks ==="
+          echo "=== docker containers ==="
           docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep -Ei 'vcluster|haproxy' || true
           kubectl get pods -A
           kubectl get gateway,httproute,svc -A
