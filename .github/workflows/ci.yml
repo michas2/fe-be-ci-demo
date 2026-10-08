@@ -253,30 +253,50 @@ jobs:
           # reach Programmed=True with an assigned address.
           kubectl wait --timeout=180s gateway/demo --for=condition=Programmed
 
-      - name: Show deployed resources
-        run: kubectl get pods,svc,gateway,httproute
-
-      - name: Run integration tests through the Gateway
+      - name: Inspect the LoadBalancer (how vind exposes the Gateway)
         run: |
-          # vind assigns the Gateway a real LoadBalancer address (proven by the
-          # Programmed=True check above) — the key thing kind can't do. However
-          # that IP lives on the Docker bridge network and isn't routable from
-          # the runner's host netns, so for the actual request we port-forward
-          # the Envoy service (same technique as the kind job).
-          ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
-            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo \
-            -o jsonpath='{.items[0].metadata.name}')
-          kubectl -n envoy-gateway-system port-forward "svc/${ENVOY_SVC}" 8080:80 &
-          sleep 8
-          echo "127.0.0.1 example.local" | sudo tee -a /etc/hosts
-          BASE_URL=http://example.local:8080 node --test tests/integration.test.mjs
+          # vind's cloud-controller-manager starts a dedicated HAProxy
+          # container per LoadBalancer service, attached to the vind Docker
+          # network, and sets the Service EXTERNAL-IP to that container's IP.
+          echo "=== vind-related docker containers ==="
+          docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}' | grep -Ei 'vcluster|haproxy|vind' || true
+          echo "=== docker networks ==="
+          docker network ls
+          echo "=== Gateway address (the LB IP) ==="
+          kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}'; echo
+
+      - name: Run integration tests directly through the LoadBalancer IP
+        run: |
+          # On Linux, Docker network IPs are routable from the host, so we try
+          # to reach the LoadBalancer IP directly — no kubectl port-forward.
+          GW_ADDR=$(kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}')
+          echo "Gateway LoadBalancer address: $GW_ADDR"
+          echo "$GW_ADDR example.local" | sudo tee -a /etc/hosts
+
+          # Wait until the HAProxy LB actually answers (it may need a few
+          # seconds after the Gateway reports Programmed).
+          for i in $(seq 1 30); do
+            if curl -sf -H "Host: example.local" "http://$GW_ADDR/healthz" >/dev/null; then
+              echo "LoadBalancer is reachable from the host"; break
+            fi
+            echo "waiting for LB to answer... ($i)"; sleep 2
+          done
+
+          BASE_URL=http://example.local node --test tests/integration.test.mjs
 
       - name: Dump diagnostics on failure
         if: failure()
         run: |
+          GW_ADDR=$(kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}' || true)
+          echo "Gateway address: $GW_ADDR"
+          echo "=== route to the LB subnet from the host ==="
+          ip route get "$GW_ADDR" || true
+          echo "=== direct curl attempt ==="
+          curl -v -H "Host: example.local" "http://$GW_ADDR/healthz" || true
+          echo "=== docker containers / networks ==="
+          docker ps -a --format 'table {{.Names}}\t{{.Status}}' | grep -Ei 'vcluster|haproxy' || true
           kubectl get pods -A
           kubectl get gateway,httproute,svc -A
           kubectl describe gateway demo || true
-          kubectl describe httproute demo || true
           kubectl logs -l app.kubernetes.io/component=backend --tail=50 || true
           kubectl logs -l app.kubernetes.io/component=frontend --tail=50 || true
