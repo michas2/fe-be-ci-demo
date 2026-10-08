@@ -256,14 +256,20 @@ jobs:
       - name: Show deployed resources
         run: kubectl get pods,svc,gateway,httproute
 
-      - name: Run integration tests through the Gateway LoadBalancer
+      - name: Run integration tests through the Gateway
         run: |
-          # Read the address the Gateway was assigned (works because vind has
-          # a LoadBalancer) and point example.local at it — no port-forward.
-          GW_ADDR=$(kubectl get gateway/demo -o jsonpath='{.status.addresses[0].value}')
-          echo "Gateway address: $GW_ADDR"
-          echo "$GW_ADDR example.local" | sudo tee -a /etc/hosts
-          BASE_URL=http://example.local node --test tests/integration.test.mjs
+          # vind assigns the Gateway a real LoadBalancer address (proven by the
+          # Programmed=True check above) — the key thing kind can't do. However
+          # that IP lives on the Docker bridge network and isn't routable from
+          # the runner's host netns, so for the actual request we port-forward
+          # the Envoy service (same technique as the kind job).
+          ENVOY_SVC=$(kubectl get svc -n envoy-gateway-system \
+            --selector=gateway.envoyproxy.io/owning-gateway-namespace=default,gateway.envoyproxy.io/owning-gateway-name=demo \
+            -o jsonpath='{.items[0].metadata.name}')
+          kubectl -n envoy-gateway-system port-forward "svc/${ENVOY_SVC}" 8080:80 &
+          sleep 8
+          echo "127.0.0.1 example.local" | sudo tee -a /etc/hosts
+          BASE_URL=http://example.local:8080 node --test tests/integration.test.mjs
 
       - name: Dump diagnostics on failure
         if: failure()
